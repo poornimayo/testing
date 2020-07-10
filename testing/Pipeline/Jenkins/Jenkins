@@ -1,0 +1,216 @@
+#!/usr/bin/env groovy
+
+pipeline {
+    agent none
+    triggers {
+        // Check for the commits on every one min.
+        pollSCM('* * * * *') 
+    }
+    options {
+        // Don't start with the next run of current run is inprogress.
+        disableConcurrentBuilds()
+
+        // Number of build information to retain in UI.
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+
+        // Checkout only where it is required.
+        skipDefaultCheckout()
+    }
+    environment {
+        // Define global variables here
+        BUILD_DIRECTORY = "Product\\"
+        PUBLISH_DIRECTORY = "${BUILD_DIRECTORY}Output\\Publish\\"
+        TEST_RESULTS_SHARE = "\\\\ec2-34-219-107-255.us-west-2.compute.amazonaws.com\\TestResultsRepository\\"
+        TEST_SUITES_DIR = "Pipeline\\TestSuites\\"
+        
+        STASHID_TEST_BINARIES = "StashTestBinaries"
+        
+        // SCM Vars
+        SCM_URL = ""
+        SCM_BRANCH = ""
+        SCM_COMMIT = ""
+    }
+    stages {
+        stage('Build') {
+            agent { label 'BuildServer' }
+            options {
+               timeout(time: 10, unit: 'MINUTES')
+               timestamps()
+            }
+            steps {
+                script{
+                   setup()
+
+                    // Print all env variables set so far.
+                    bat returnStatus: false, script:"set "
+                    dir("${BUILD_DIRECTORY}") {
+                        def scmVars = checkout scm
+
+                        println "scmVars: ${scmVars}"
+                        SCM_URL = scmVars.GIT_URL
+                        SCM_BRANCH = scmVars.GIT_BRANCH
+                        SCM_COMMIT = scmVars.GIT_COMMIT 
+                        // Get first 8 characters of the commit id. (common notation).
+                        SCM_COMMIT = SCM_COMMIT.substring(0,8)
+                        currentBuild.displayName = "${SCM_COMMIT}"
+
+                        println "SCM_URL: ${SCM_URL}"
+                        println "SCM_BRANCH: ${SCM_BRANCH}"
+                        println "SCM_COMMIT: ${SCM_COMMIT}"
+                        
+                        // Ex: scmVars: [GIT_BRANCH:origin/branches/RealizePipeline_Mani, GIT_COMMIT:dcaba3a4ae1331d31d9ddfbaf4a5a7d0f7cd03a6, GIT_PREVIOUS_COMMIT:dcaba3a4ae1331d31d9ddfbaf4a5a7d0f7cd03a6, GIT_PREVIOUS_SUCCESSFUL_COMMIT:dcaba3a4ae1331d31d9ddfbaf4a5a7d0f7cd03a6, GIT_URL:https://github.com/vishalgr/DEVOPS_test/]
+                        
+                        // Build the product archive 
+                        bat returnStatus: false, script:"Build.bat --server"
+                        
+                        // Stash the binaries
+                        def buildCombinedBinaries = "Output\\Work\\Combined\\"
+                        def workBinaries = "Output\\Work\\Binaries\\"
+                        def toolsExecuterScript = "Tools\\Scripts\\ToolsExecuterScript.ps1"
+                        //def testSuites = "Pipeline\\TestSuites\\"
+                        println "buildCombinedBinaries: ${buildCombinedBinaries}"
+                        if(! fileExists("${buildCombinedBinaries}")) {
+                            error "buildCombinedBinaries items not found"
+                        }
+                        //stash includes: "${buildCombinedBinaries}\\**" ,allowEmpty: true, name: "${STASHID_TEST_BINARIES}"
+                        // Note: For some reasons stash with only relative path is working
+                        stash allowEmpty: true, includes: "${buildCombinedBinaries}**,${workBinaries}**,${TEST_SUITES_DIR}**,${toolsExecuterScript}", name: STASHID_TEST_BINARIES
+                    }
+                }
+            }
+        }
+        
+        // All the test stages shall be placed under this test stage.
+        stage('Test') {
+            // Disable test execution until complete pipeline works flowlessly.
+            when { expression { return EvaluateBranch() } }
+            parallel {
+                stage('Test_TestSuite1') {
+                    agent { label 'win-test-slave' }
+                    options {
+                       timeout(time: 10, unit: 'MINUTES')
+                       timestamps()
+                    }
+                    steps {
+                        script{
+                            setup()
+                            testExecutiuon("TestSuite_Production1.xml")
+                        }
+                    }
+                }
+                stage('Test_TestSuite2') {
+                    agent { label 'win-test-slave' }
+                    options {
+                       timeout(time: 10, unit: 'MINUTES')
+                       timestamps()
+                    }
+                    steps {
+                        script{
+                            setup()
+                            testExecutiuon("TestSuite_Production2.xml")
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Publish') {
+            when { expression { return EvaluateBranch() } }
+            agent { label 'BuildServer' }
+            options {
+               timeout(time: 10, unit: 'MINUTES')
+               timestamps()
+            }
+            steps {
+                script{
+                    dir("${BUILD_DIRECTORY}") {
+                        // Publish the package to the GitHub, so that customers can consume it.
+                        catchError(message: "Publishing the package failed") {
+                            def outputDir = pwd() + "\\Output\\work" // Should not end with "\\" because batch file adds its own "\\".
+                            bat returnStatus: false, script: "Tools\\Scripts\\PackageExecutor.bat  --OutputDirectory  ${outputDir}"
+                        }
+
+                        // TODO: Process results (if required)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ===== Functions =====
+def setup() {
+    println "Current stage is: ${STAGE_NAME}"
+    bat returnStatus: false, script:"WhoAmI"
+    cleanWs disableDeferredWipeout: true, deleteDirs: true
+}
+
+def EvaluateBranch() {
+    // TODO: Only master branch to be evaluated here.
+    def expectedBranch = "origin/branches/RealizePipeline_Mani"
+    def isMatchingBranchFound = false
+    if(SCM_BRANCH == null) {
+        return isMatchingBranchFound
+    }
+    isMatchingBranchFound = (SCM_BRANCH == expectedBranch)
+    if(isMatchingBranchFound == false) {
+        isMatchingBranchFound = (SCM_BRANCH == "origin/master")
+    }
+    return isMatchingBranchFound
+}
+
+def CopyFolder(String source, String destination, String filesToCopy="*.*", boolean recursive=true) {
+    def recursiveParameter = ""
+    if (recursive) {
+        recursiveParameter = "/e"
+    }
+    bat returnStatus: false, script:"""
+        @echo off
+        robocopy ${source} ${destination} ${filesToCopy} ${recursiveParameter} /np /r:3 /w:10
+        if errorlevel 8 (
+            rem It is a general approach to consider error codes 8 and higher as failing
+            exit /b 1
+        )
+        rem It is a general approach to consider error codes 0, 1, 2 and 4 as successful
+        exit /b 0
+    """
+}
+
+def testExecutiuon(String testSuiteName) {
+    // Set up the test bed
+    unstash STASHID_TEST_BINARIES
+    // to be stashed: ToolsExecuterScript and test suits
+    // Execute tests
+    def toolsExecuterScript =  "${WORKSPACE}\\Tools\\Scripts\\ToolsExecuterScript.ps1"
+    def executor = "${WORKSPACE}\\Output\\Work\\Binaries\\NunitConsoleRunner\\nunit3-console.exe"
+    def testAssemblies = "${WORKSPACE}\\Output\\work\\Combined"
+    def outputDirectory = "${WORKSPACE}\\Output\\TestResults"
+    def testSuiteFullPath = "${WORKSPACE}\\${TEST_SUITES_DIR}${testSuiteName}"
+    
+    println "Executing test suite: ${testSuiteFullPath}"
+    if(! fileExists(testSuiteFullPath)) {
+            error("Test suite file is not found: ${testSuiteFullPath}")
+    }
+    // Write a log file so that in worst case a log file is available in the test results, contains which jenkins job actually triggered these results.
+    dir(outputDirectory) {
+        writeFile file:"readme.txt", text:"This directory contains logs created as part of Jenkins job: ${BUILD_URL}, and node is ${NODE_NAME}"
+    }
+    // Example: D:\Personal\RealizePipeline_Mani\Tools\Scripts\ToolsExecuterScript.ps1 
+    // -Executor D:\Personal\RealizePipeline_Mani\Output\Work\Binaries\NunitConsoleRunner\nunit3-console.exe
+    // -TestFramework NUnit
+    // -AssemblyDirectory D:\Personal\RealizePipeline_Mani\Output\work\Combined 
+    // -OutputDirectory D:\Personal\Harshitha\RealizePipeline_Mani\output\TestResults
+    //-TestSuite D:\Personal\RealizePipeline_Mani\Pipeline\TestSuites\TestSuite_Production1.xml
+    
+    // def testRunnerCommand = "${testAssemblies}DevOps.TestRunner.exe --Executor ${executor} --TestFramework NUnit --AssemblyDirectory ${testAssemblies} --OutputDirectory ${outputDirectory}"
+    // bat returnStatus: false, script: testRunnerCommand
+    def testExecutorCommand = "${toolsExecuterScript} -Executor ${executor} -TestFramework NUnit -AssemblyDirectory ${testAssemblies} -OutputDirectory ${outputDirectory} -TestSuite ${testSuiteFullPath}"
+    println "testExecutorCommand: ${testExecutorCommand}"
+    powershell returnStatus: false, script: testExecutorCommand
+
+    // Copy test results to the build server share
+    def now = new Date()
+    def dateTimeString = now.format("yyyyMMddHHmmss", TimeZone.getTimeZone('UTC'))
+    def targetResultsShare = "${TEST_RESULTS_SHARE}${SCM_COMMIT}_${dateTimeString}\\"
+    CopyFolder(outputDirectory, targetResultsShare)
+}

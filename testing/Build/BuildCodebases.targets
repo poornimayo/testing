@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Main Build script
+-->
+
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003"
+  DefaultTargets="Build" >
+
+  <Import Project="Publish.targets" />
+
+  <PropertyGroup>
+    <MSBuildProjectDirectoryWithSlash Condition="HasTrailingSlash('$(MSBuildProjectDirectory)')"
+    >$(MSBuildProjectDirectory)</MSBuildProjectDirectoryWithSlash>
+    <StopOnFirstFailure>true</StopOnFirstFailure>
+    <CodebasePath>..\</CodebasePath>
+    <MainPublishDirectory>$(MSBuildThisFileDirectory)..\Output\Publish</MainPublishDirectory>
+    <DirectoriesToDelete>..\..\Output\</DirectoriesToDelete>
+  </PropertyGroup>
+
+
+  <Target Name="RestoreNuGetPackages" Condition=" '@(Solutions)' != '' " >
+    <MSBuild Projects="%(Solutions.Identity)"
+      Condition=" '@(Solutions)' != '' "
+      Targets="Restore"
+      StopOnFirstFailure="$(StopOnFirstFailure)"
+      BuildInParallel="false" />
+    <OnError ExecuteTargets="RestoreNuGetPackagesError" />
+  </Target>
+  <Target Name="RestoreNuGetPackagesError" >
+    <Error Text="Restoring NuGet packages failed" />
+  </Target>
+
+  <Target Name="Clean" Condition=" '@(Solutions)' != '' " >
+    <Message Text="Cleaning projects: @(Solutions)" />
+    <MSBuild Projects="%(Solutions.Identity)"
+      Condition=" '@(Solutions)' != '' "
+      Targets="Clean"
+      StopOnFirstFailure="$(StopOnFirstFailure)"
+      BuildInParallel="false" />
+    <RemoveDir Directories="$(DirectoriesToDelete)" />
+  </Target>
+    
+  <Target Name="CustomClean" Condition=" '@(Solutions)' != '' " >
+    <Message Text="Cleaning directories: @(DirectoriesToDelete)" />
+    <RemoveDir Directories="$(DirectoriesToDelete)" />
+  </Target>
+
+
+  <Target Name="Build_" DependsOnTargets="RestoreNuGetPackages" >
+    <Message Text="MSBuildBinPath: $(MSBuildBinPath)" />
+    <Message Text="Building projects: @(Solutions)" />
+    <MSBuild Projects="%(Solutions.Identity)"
+      Condition=" '@(Solutions)' != '' "
+      Targets="Build"
+      StopOnFirstFailure="$(StopOnFirstFailure)"
+      BuildInParallel="false" />
+  </Target>
+  <Target Name="Publish" DependsOnTargets="Publish_" />
+  
+  <Target Name="Build" DependsOnTargets="Build_;Publish" />
+
+</Project>
