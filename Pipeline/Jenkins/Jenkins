@@ -107,7 +107,7 @@ pipeline {
                     steps {
                         script{
                             setup()
-                            testExecutiuon("TestSuite_Production2.xml")
+                            testExecutiuon("TestSuite_Production4.xml")
                         }
                     }
                 }
