@@ -25,7 +25,7 @@ namespace DevOps.TestRunner
             if (arguments.TestSuite != null) {
                 testSuite = arguments.TestSuite.FullName;
             }
-            var testAssemblies = testRunner.FindTestAssembliesABC(arguments.AssemblyDirectory, testSuite);
+            var testAssemblies = testRunner.FindTestAssemblies(arguments.AssemblyDirectory, testSuite);
             exitCode = 0;
             foreach (var testAssembly in testAssemblies) {
                 if (!File.Exists(testAssembly)) {
